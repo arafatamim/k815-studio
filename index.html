@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>K815 Studio</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23121210'/%3E%3Crect x='5' y='5' width='10' height='10' rx='2' fill='%23ff4f12'/%3E%3Crect x='17' y='5' width='10' height='10' rx='2' fill='%23ece8e0'/%3E%3Crect x='5' y='17' width='10' height='10' rx='2' fill='%23ece8e0'/%3E%3Crect x='17' y='17' width='10' height='10' rx='2' fill='%23ece8e0'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=JetBrains+Mono:wght@400;600;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="mark">
+        <h1>K815<b>.</b></h1>
+        <span>Studio / 8-key macropad</span>
+      </div>
+      <div class="conn">
+        <span id="connStatus" class="status">Disconnected</span
+        ><button id="connectBtn" class="btn dark">Connect</button>
+      </div>
+    </header>
+    <div id="noHidWarning">
+      WebHID isn't available here. Use Chrome or Edge, from <code>localhost</code> or HTTPS.
+    </div>
+
+    <main>
+      <div class="left">
+        <div id="padBody"><div class="keycap-grid" id="keycaps"></div></div>
+        <div class="specs">
+          <div>DEVICE <b>VID 30FA · PID 1340</b></div>
+          <div>POLLING <b id="pollReadout">—</b></div>
+          <div>PROFILES <b>same layout × 4</b></div>
+        </div>
+      </div>
+
+      <div>
+        <nav class="tabs" id="tabs">
+          <button data-tab="keys" class="on"><i>01</i>Keys</button>
+          <button data-tab="light"><i>02</i>Light</button>
+          <button data-tab="dev"><i>03</i>Device</button>
+        </nav>
+
+        <div class="panel on" data-panel="keys">
+          <p class="lede">
+            Click a key on the pad, then give it a shortcut, a sequence (<code>ctrl+c ctrl+v</code>) or a
+            media key.
+          </p>
+          <span class="label" style="margin-top: 20px">Binding</span>
+          <div class="editor">
+            <div class="editor-head">
+              <span id="keyLabel">KEY 1</span><button class="btn small" id="clearBtn">Clear</button>
+            </div>
+            <div class="key-preview" id="keyPreview"></div>
+            <div class="input-row">
+              <input
+                id="keyInput"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="type a combo, e.g. ctrl+shift+a"
+              /><button class="btn small primary" id="recordBtn">● Record</button>
+            </div>
+          </div>
+          <span class="label">Media keys</span>
+          <div class="chips" id="mediaChips"></div>
+          <div class="action-row">
+            <button class="btn primary needs-device" id="writeKeysBtn">Write keys to pad</button
+            ><span
+              >Empty keys do nothing. Close any other K815 configuration software first, as it can overwrite
+              your settings.</span
+            >
+          </div>
+        </div>
+
+        <div class="panel" data-panel="light">
+          <span class="label">Mode</span>
+          <div class="tiles" id="modeTiles"></div>
+          <div id="colorField">
+            <span class="label">Colour <span id="colorHint"></span></span>
+            <div class="swatches" id="swatches"></div>
+          </div>
+          <div id="reactField">
+            <span class="label">Reaction style</span>
+            <div class="tiles four" id="reactTiles"></div>
+          </div>
+          <div id="speedField">
+            <span class="label">Speed</span>
+            <div class="slider">
+              <input type="range" id="speed" min="0" max="6" /><span class="slider-value" id="speedValue"></span>
+              <div class="slider-ends"><span>slow</span><span>fast</span></div>
+            </div>
+          </div>
+          <div id="brightField">
+            <span class="label">Brightness</span>
+            <div class="slider">
+              <input type="range" id="bright" min="1" max="7" /><span class="slider-value" id="brightValue"></span>
+              <div class="slider-ends"><span>dim</span><span>bright</span></div>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="btn primary needs-device" id="applyLightingBtn">Apply lighting</button
+            ><span>Stored on the pad. The glow on the left is a preview.</span>
+          </div>
+          <div class="note">The K815 has a single shared backlight: all 8 keys light in the same colour.</div>
+        </div>
+
+        <div class="panel" data-panel="dev">
+          <span class="label">USB polling rate</span>
+          <div class="tiles four" id="pollTiles"></div>
+          <span class="label">Backup</span>
+          <p class="lede" style="margin: 0 0 14px">
+            Saves the pad's raw 4 KB config to a file. Takes about 20 seconds.
+          </p>
+          <button class="btn needs-device" id="backupBtn">Download config (.bin)</button>
+        </div>
+      </div>
+    </main>
+
+    <div id="statusBar"><span id="statusMsg">Connect your pad to begin.</span></div>
+
+    <!-- order matters: codec (pure) -> device (WebHID) -> app (UI) -->
+    <script src="k815-codec.js"></script>
+    <script src="k815-device.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
