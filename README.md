@@ -6,6 +6,8 @@ The device protocol was reverse-engineered from the vendor's Windows tool. It is
 
 > **Unofficial.** This is not affiliated with the pad's maker. It writes to the pad's flash memory. Download a backup first (Device tab), and use it at your own risk.
 
+<img width="447" height="447" alt="image" src="https://github.com/user-attachments/assets/fa85541d-5c44-4874-853a-c652b8cb84ff" />
+
 ## Features
 
 - **Keys:** bind each of the 8 keys to a shortcut (`ctrl+shift+a`), a sequence (`ctrl+c ctrl+v`) or a media key (volume, play/pause, ...). You can type the combo or press Record and hit the keys. The layout is written to all 4 on-device profiles.
