@@ -27,4 +27,29 @@ const img = K.buildKeyImage(d.slice(0, 0xA0), {0: 'a'});
 eq(img.header.slice(0, 8), d.slice(0, 8)); assert.strictEqual(img.table.length, 0x230);
 // live LED report matches the Python tool: [0x13, 0xFF, 0x80+(mode<<4)+speed, 0x0F, dim, 0x03, 0xFF]
 eq(K.ledLiveReport(2, 3, 0, 0), [0x13, 0xFF, 0xA3, 0x0F, 0, 0x03, 0xFF]);
+
+// reading back: encode a layout, then decode what the pad would hold
+const specs = ['ctrl+shift+a', 'ctrl+c ctrl+v', 'volup', 'x', 'f13', '', 'kp5', 'playpause'];
+const bound = {}; specs.forEach((s, k) => { if (s) bound[k] = s; });
+const image = K.buildKeyImage(Array(0xA0).fill(0), bound);
+const macros = image.area;
+const back = K.decodeBindings(image.header, image.table.slice(0, 80), macros);
+eq(back.bindings, specs); eq(back.unrecognised, []);
+// a macro other software might write (interleaved presses) is reported, not mangled
+const odd = [...image.area]; odd[2] = 0x94; odd[3] = 0xE0; odd[4] = 0x94; odd[5] = 0x04; odd[6] = 0x14; odd[7] = 0xE0; odd[8] = 0x14; odd[9] = 0x04;
+const bad = K.decodeBindings(image.header, image.table.slice(0, 80), odd);
+assert.ok(bad.unrecognised.includes(0)); assert.strictEqual(bad.bindings[0], '');
+// lighting round trip (colours that survive 4-bit rounding)
+const full = Array(0xA0).fill(0);
+for (const [mode, colors, expectColors, extra] of [
+  ['static', [[255, 85, 17]], ['#ff5511'], {}], ['fade', [[255, 0, 0], [0, 0, 255]], ['#ff0000', '#0000ff'], {}],
+  ['breathe', [[0, 0, 255], [255, 0, 0]], ['#0000ff'], {}], ['react', [[255, 0, 0]], ['#ff0000'], {style: 2}]]) {
+  const h = [...full]; const l = K.buildLedSettings(h.slice(8, 0x70), mode, colors, 2, 4, extra.style ?? 0);
+  h.splice(8, 0x68, ...l.settings);
+  assert.deepStrictEqual(K.decodeLighting(h), {mode, colors: expectColors, speed: 4, brightness: 5, reactStyle: extra.style ?? 0}, mode);
+}
+const dark = [...full]; dark.splice(8, 0x68, ...K.buildLedSettings(dark.slice(8, 0x70), 'static', [[0, 0, 0]], 0, 3, 0).settings);
+assert.strictEqual(K.decodeLighting(dark).mode, 'off');
+const unknown = [...full]; unknown[0x1C] = 4 << 4; assert.strictEqual(K.decodeLighting(unknown), null);
+const poll = [...full]; poll[0x1E] = 1; assert.strictEqual(K.decodePollRate(poll), 500);
 console.log('ok');

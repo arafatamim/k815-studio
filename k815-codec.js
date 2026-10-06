@@ -248,9 +248,119 @@ function ledLiveReport(firmwareMode, speed, dim, reactFlag) {
 const POLL_RATES = { 125: 7, 250: 3, 500: 1, 1000: 0 };
 const POLL_ADDR = 0x1e;
 
+// ---------- bytes -> settings (reading the pad back) ----------
+
+const KEY_NAME_BY_HID_CODE = Object.fromEntries(Object.entries(KEYS).map(([name, code]) => [code, name]));
+const MEDIA_NAMES_BY_USAGE = Object.fromEntries(Object.entries(MEDIA).map(([name, usage]) => [usage, name]));
+
+/**
+ * Inverse of parseBinding for macro events [[isPress, hidCode], ...].
+ * Only understands what our encoder writes: runs of key-downs followed by the matching key-ups in reverse.
+ * Returns the binding text, or null for anything else (a macro made by other software).
+ */
+function eventsToBinding(events) {
+  const steps = events.map(([isPress, code]) => [isPress, KEY_NAME_BY_HID_CODE[code]]);
+  if (!steps.length || steps.some(([, name]) => name === undefined)) return null;
+
+  const combos = [];
+  let i = 0;
+  while (i < steps.length) {
+    const down = [];
+    const up = [];
+    while (i < steps.length && steps[i][0]) down.push(steps[i++][1]);
+    while (i < steps.length && !steps[i][0]) up.push(steps[i++][1]);
+    if (!down.length || up.join("+") !== [...down].reverse().join("+")) return null;
+    combos.push(down.join("+"));
+  }
+  return combos.join(" ");
+}
+
+/**
+ * header: pad bytes 0x00-0x9F. entries: bytes at HEADER_LEN, at least 8 x ENTRY_LEN (profile 0).
+ * macros: bytes from MACRO_START up to the macro-end pointer.
+ * Returns {bindings: [text per key, "" if none], unrecognised: [key indexes]}.
+ */
+function decodeBindings(header, entries, macros) {
+  const bindings = [];
+  const unrecognised = [];
+
+  for (let key = 0; key < NUM_KEYS; key++) {
+    const type = header[TYPE_ADDR[0][key]] & KEY_TYPE_MASK;
+    const entry = entries.slice(key * ENTRY_LEN, (key + 1) * ENTRY_LEN);
+    let binding = "";
+
+    if (type === KEY_TYPE_MEDIA) {
+      binding = MEDIA_NAMES_BY_USAGE[entry[3] | (entry[4] << 8)] ?? null;
+    } else if (type === KEY_TYPE_MACRO) {
+      const count = (entry[1] & 0x7f) | ((entry[7] & 0x3f) << 7);
+      const start = ((entry[5] | (entry[6] << 8)) & 0x3fff) - MACRO_START + 2; // skip the [repeat, 0] record header
+      const pairs = macros.slice(start, start + count * 2);
+      if (start >= 2 && pairs.length === count * 2) {
+        const events = [];
+        for (let i = 0; i < pairs.length; i += 2) events.push([(pairs[i] & PRESS_FLAG) !== 0, pairs[i + 1]]);
+        binding = eventsToBinding(events);
+      } else {
+        binding = null;
+      }
+    } else if (type !== 0) {
+      binding = null;
+    }
+
+    if (binding === null) {
+      unrecognised.push(key);
+      binding = "";
+    }
+    bindings.push(binding);
+  }
+  return { bindings, unrecognised };
+}
+
+const toHex = ([r, g, b]) => "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+
+/**
+ * header: pad bytes 0x00-0x9F. Returns {mode, colors: ["#rrggbb"], speed, brightness, reactStyle},
+ * or null if the pad is in a firmware mode this app doesn't produce. Colours come back rounded to
+ * the pad's 4 bits per channel.
+ */
+function decodeLighting(header) {
+  const modeByte = header[LED_MODE_ADDR];
+  const firmwareMode = (modeByte >> 4) | ((header[LED_MODE_BIT3_ADDR] >> 7) << 3);
+  const reactFlag = (modeByte >> 3) & 1;
+  const name = reactFlag
+    ? firmwareMode === LED_MODES.react ? "react" : null
+    : Object.keys(LED_MODES).find((m) => m !== "react" && LED_MODES[m] === firmwareMode) ?? null;
+  if (!name) return null;
+
+  // Undo the inversion: nibble n was stored as (255 - value) >> 4.
+  const slots = [];
+  for (let slot = 0; slot < USER_COLOR_SLOTS; slot++) {
+    slots.push([0, 1, 2].map((c) => {
+      const [addr, shift] = colorNibbleAddr(3 * slot + c, true);
+      return (15 - ((header[addr] >> shift) & 0xf)) * 17;
+    }));
+  }
+  // We fill all 7 slots by repeating the chosen colours, so the colours are the shortest repeating prefix.
+  let period = 1;
+  while (period < slots.length && !slots.every((c, j) => c.join() === slots[j % period].join())) period++;
+  const multi = name === "cycle" || name === "fade" || name === "react";
+  const colors = slots.slice(0, multi ? period : 1);
+
+  const isDark = colors.length === 1 && colors[0].every((v) => v === 0);
+  return {
+    mode: name === "static" && isDark ? "off" : name,
+    colors: colors.map(toHex),
+    speed: Math.min(header[LED_MODE_ADDR] & 7, 6),
+    brightness: Math.max(1, 7 - ((header[LED_BRIGHTNESS_ADDR] >> 4) & 7)),
+    reactStyle: (header[TYPE_ADDR[0][0]] >> REACT_STYLE_SHIFT) & 3,
+  };
+}
+
+const decodePollRate = (header) => Number(Object.keys(POLL_RATES).find((hz) => POLL_RATES[hz] === header[POLL_ADDR])) || 0;
+
 const K815 = {
   NUM_KEYS, HEADER_LEN, KEY_TABLE_LEN, MACRO_START, SETTINGS_BASE, POLL_ADDR,
   TYPE_ADDR, KEYS, MODIFIERS, MEDIA, LED_MODES, POLL_RATES,
   normalizeSpec, parseBinding, buildBindings, buildKeyImage,
   colorNibbleAddr, buildLedSettings, ledLiveReport,
+  decodeBindings, decodeLighting, decodePollRate, MACRO_END_LIMIT, ENTRY_LEN,
 };

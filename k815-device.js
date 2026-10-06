@@ -141,6 +141,26 @@ async function writePollRate(hz) {
   return readPollRate();
 }
 
+/**
+ * Reads what the pad currently holds: key bindings (profile 0), lighting and polling rate.
+ * Returns {bindings, unrecognised, lighting, pollRate}; lighting is null for modes this app doesn't produce.
+ */
+async function readPadConfig() {
+  const header = await readBytes(0, K815.HEADER_LEN); // settings, key types and the macro-end pointer
+  const entries = await readBytes(K815.HEADER_LEN, K815.NUM_KEYS * K815.ENTRY_LEN); // profile 0 key table
+  const macroEnd = (header[0x6e] | (header[0x6f] << 8)) & 0x3fff;
+  const hasMacros = macroEnd > K815.MACRO_START && macroEnd <= K815.MACRO_END_LIMIT;
+  const macros = hasMacros ? await readBytes(K815.MACRO_START, macroEnd - K815.MACRO_START) : [];
+
+  const { bindings, unrecognised } = K815.decodeBindings(header, entries, macros);
+  return {
+    bindings,
+    unrecognised,
+    lighting: K815.decodeLighting(header),
+    pollRate: K815.decodePollRate(header),
+  };
+}
+
 /** The pad's whole 4 KB config memory, for backup. */
 const readFullConfig = (onProgress) => readBytes(0, 0x1000, onProgress);
 

@@ -14,7 +14,7 @@ The device protocol was reverse-engineered from the vendor's Windows tool. It is
 - **Lighting:** static, breathe, cycle, fade, react-to-keypress and off, with colour, speed and brightness. A live preview shows how the pad should look. Settings are stored on the pad.
 - **Device:** USB polling rate (125 / 250 / 500 / 1000 Hz) and a raw 4 KB config backup.
 
-Settings are stored on the pad, so they keep working without this page or any software running.
+Settings are stored on the pad, so they keep working without this page or any software running. When you connect, the page reads the pad's saved keys, lighting and polling rate back, so it shows what the pad actually holds. Colours come back rounded to the pad's 4 bits per channel, and a macro made by other software that the page can't represent is flagged, not shown wrongly.
 
 ## Running it
 

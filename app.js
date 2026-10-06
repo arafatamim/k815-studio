@@ -39,6 +39,10 @@ function saveState() {
 
 let isBusy = false; // true while a write/read to the pad is running
 
+// Keys whose binding on the pad isn't something this page can show (e.g. a macro made by other software).
+// Not saved: it describes the pad, which is re-read on every connect.
+let unrecognisedKeys = [];
+
 // ============ 2. small helpers ============
 
 const byId = (id) => document.getElementById(id);
@@ -70,8 +74,8 @@ async function runOnPad(label, operation) {
   document.body.classList.add("busy");
   setStatus(label + "…");
   try {
-    await operation();
-    setStatus(label + " — done", "ok");
+    const message = await operation(); // an operation can return its own success message
+    setStatus(message || label + " — done", "ok");
   } catch (error) {
     console.error(error);
     setStatus(`${label} failed: ${error.message || error}`, "err");
@@ -167,7 +171,8 @@ function renderKeycap(index) {
   const keycap = byId("keycaps").children[index];
   const legend = keycap.querySelector(".legend");
 
-  const text = binding ? binding.toUpperCase().split(" ").join("\n") : "·";
+  const emptyMark = unrecognisedKeys.includes(index) ? "?" : "·";
+  const text = binding ? binding.toUpperCase().split(" ").join("\n") : emptyMark;
   legend.textContent = text;
   legend.className = "legend";
   if (!binding) legend.classList.add("empty");
@@ -185,9 +190,12 @@ function renderKeyEditor(syncInput) {
   const valid = isValidBinding(binding);
 
   byId("keyLabel").textContent = "KEY " + (index + 1);
-  byId("keyPreview").innerHTML = valid
-    ? bindingPreviewHtml(binding)
-    : '<span class="none bad">not a valid combo</span>';
+  const isCustomMacro = !binding && unrecognisedKeys.includes(index);
+  byId("keyPreview").innerHTML = !valid
+    ? '<span class="none bad">not a valid combo</span>'
+    : isCustomMacro
+      ? '<span class="none">Custom macro on the pad. This page can\'t show it; type a binding to replace it.</span>'
+      : bindingPreviewHtml(binding);
   byId("keyInput").classList.toggle("bad", !valid);
   if (syncInput) byId("keyInput").value = binding;
 
@@ -200,6 +208,7 @@ function renderKeyEditor(syncInput) {
 
 function setBinding(text, syncInput = true) {
   state.keyBindings[state.selectedKey] = K815.normalizeSpec(text);
+  if (text) unrecognisedKeys = unrecognisedKeys.filter((key) => key !== state.selectedKey);
   saveState();
   renderKeyEditor(syncInput);
 }
@@ -283,7 +292,14 @@ function buildKeysTab() {
     state.keyBindings.forEach((binding, index) => {
       if (binding) bindings[index] = binding;
     });
-    runOnPad("Writing keys", () => writeKeyBindings(bindings));
+    const wouldErase = unrecognisedKeys.filter((key) => !bindings[key]).map((key) => key + 1);
+    const warning = `Key ${wouldErase.join(", ")} hold custom macros this page can't read. Writing will erase them. Continue?`;
+    if (wouldErase.length && !confirm(warning)) return;
+    runOnPad("Writing keys", async () => {
+      await writeKeyBindings(bindings);
+      unrecognisedKeys = unrecognisedKeys.filter((key) => bindings[key]);
+      renderKeyEditor(true);
+    });
   };
 }
 
@@ -317,6 +333,8 @@ function renderLightTab() {
   byId("speedField").classList.toggle("hidden", !ANIMATED_MODES.includes(mode));
   byId("reactField").classList.toggle("hidden", mode !== "react");
   byId("colorHint").textContent = MULTI_COLOR_MODES.includes(mode) ? `· up to ${MAX_COLORS}` : "";
+  byId("speed").value = state.speed;
+  byId("bright").value = state.brightness;
   byId("speedValue").textContent = state.speed;
   byId("brightValue").textContent = state.brightness;
   renderSwatches();
@@ -416,6 +434,8 @@ byId("pollTiles").onclick = (event) => {
   });
 };
 
+byId("readPadBtn").onclick = () => runOnPad("Reading from pad", loadFromPad);
+
 byId("backupBtn").onclick = () =>
   runOnPad("Backup", async () => {
     const bytes = await readFullConfig((done, total) =>
@@ -475,14 +495,33 @@ function showConnected(connected) {
   updateButtons();
 }
 
+/** Reads the pad's saved keys, lighting and polling rate into the page. Returns a status message. */
+async function loadFromPad() {
+  const config = await readPadConfig();
+
+  state.keyBindings = config.bindings;
+  unrecognisedKeys = config.unrecognised;
+  state.pollRate = config.pollRate;
+  if (config.lighting) {
+    const { mode, ...rest } = config.lighting; // colors, speed, brightness, reactStyle share names with state
+    Object.assign(state, rest, { lightMode: mode });
+  }
+  saveState();
+
+  renderKeyEditor(true);
+  renderLightTab();
+  renderPollRate();
+
+  const notes = [];
+  if (config.unrecognised.length) notes.push(`key ${config.unrecognised.map((key) => key + 1).join(", ")} hold macros this page can't show`);
+  if (!config.lighting) notes.push("lighting mode not supported here, left unchanged");
+  return "Read from pad" + (notes.length ? ": " + notes.join("; ") : " — done");
+}
+
 async function connectTo(hidDevice) {
   await openDevice(hidDevice);
   showConnected(true);
-  runOnPad("Reading poll rate", async () => {
-    state.pollRate = await readPollRate();
-    saveState();
-    renderPollRate();
-  });
+  await runOnPad("Reading from pad", loadFromPad);
 }
 
 function setUpConnection() {
