@@ -11,6 +11,10 @@
  *   flags 0x05  read byte i of the block (the value comes back in the feature report)
  *   flags 0x10  apply
  *   flags 0x00  end of command
+ *
+ * Four profiles live side by side in that memory. The active one is byte 0x01 of the identity
+ * block (0x03 | profile << 5), mirrored by the vendor tool into 0x76; switching writes those two
+ * bytes and applies, which is ~0.3s instead of the ~10s a full key write costs.
  */
 
 const VENDOR_ID = 0x30fa;
@@ -102,14 +106,32 @@ async function writeChangedBlocks(addr, newBytes, oldBytes) {
 
 // ---------- high-level actions ----------
 
-/** bindings: {keyIndex: spec}. Rewrites all key bindings (same for all 4 profiles). */
-async function writeKeyBindings(bindings) {
+/** profiles: one binding list per profile ({keyIndex: spec}). Rewrites all four in one pass. */
+async function writeKeyBindings(profiles) {
   const oldHeader = await readBytes(0, K815.HEADER_LEN);
-  const { header, table, area } = K815.buildKeyImage(oldHeader, bindings);
-  // Skip bytes 0x00-0x07: that's the identity header and must never be touched.
+  const { header, table, area } = K815.buildProfileImage(oldHeader, profiles);
+  // Skip bytes 0x00-0x07: that's the identity header, and byte 0x01 is the active profile. Writing
+  // key bindings never changes which profile the pad is on.
   await writeChangedBlocks(8, header.slice(8), oldHeader.slice(8));
   await writeChangedBlocks(K815.HEADER_LEN, table);
   await writeChangedBlocks(K815.MACRO_START, area);
+  await applyChanges();
+}
+
+const PROFILE_BLOCK_ADDR = 0x00; // the active-profile byte (0x01) sits in this aligned 8-byte block
+const MIRROR_BLOCK_ADDR = 0x70; // ...and its mirror (0x76) sits in this one
+
+/**
+ * Switches the pad to profile 0-3. Only byte 0x01 changes: bytes 0 and 2-7 of the identity header
+ * are read back and written unchanged, and the vendor's mirror byte is kept in step. Two 8-byte
+ * blocks plus apply, so ~0.3s rather than the ~10s a full key write costs.
+ */
+async function switchProfile(profile) {
+  const selector = await readBytes(PROFILE_BLOCK_ADDR, BLOCK_SIZE);
+  await writeBlock(PROFILE_BLOCK_ADDR, K815.buildProfileSelectBlock(selector, profile));
+  const mirror = await readBytes(MIRROR_BLOCK_ADDR, BLOCK_SIZE);
+  mirror[K815.PROFILE_MIRROR_ADDR - MIRROR_BLOCK_ADDR] = profile;
+  await writeBlock(MIRROR_BLOCK_ADDR, mirror);
   await applyChanges();
 }
 
@@ -142,20 +164,29 @@ async function writePollRate(hz) {
 }
 
 /**
- * Reads what the pad currently holds: key bindings (profile 0), lighting and polling rate.
- * Returns {bindings, unrecognised, lighting, pollRate}; lighting is null for modes this app doesn't produce.
+ * Reads what the pad currently holds: all four profiles' key bindings, which profile is live,
+ * lighting and polling rate. Returns {profiles: [{bindings, unrecognised} x4], activeProfile,
+ * lighting, pollRate}; lighting is null for modes this app doesn't produce.
  */
 async function readPadConfig() {
-  const header = await readBytes(0, K815.HEADER_LEN); // settings, key types and the macro-end pointer
-  const entries = await readBytes(K815.HEADER_LEN, K815.NUM_KEYS * K815.ENTRY_LEN); // profile 0 key table
+  const header = await readBytes(0, K815.HEADER_LEN); // settings, all four type blocks, macro-end pointer
   const macroEnd = (header[0x6e] | (header[0x6f] << 8)) & 0x3fff;
   const hasMacros = macroEnd > K815.MACRO_START && macroEnd <= K815.MACRO_END_LIMIT;
   const macros = hasMacros ? await readBytes(K815.MACRO_START, macroEnd - K815.MACRO_START) : [];
 
-  const { bindings, unrecognised } = K815.decodeBindings(header, entries, macros);
+  // Each profile has its own 0x8C-byte block in the key table; we use its first 8 slots.
+  const profiles = [];
+  for (let profile = 0; profile < K815.NUM_PROFILES; profile++) {
+    const entries = await readBytes(
+      K815.HEADER_LEN + profile * K815.PROFILE_STRIDE,
+      K815.NUM_KEYS * K815.ENTRY_LEN,
+    );
+    profiles.push(K815.decodeBindings(header, entries, macros, profile));
+  }
+
   return {
-    bindings,
-    unrecognised,
+    profiles,
+    activeProfile: K815.profileFromSelectorByte(header[K815.PROFILE_SELECTOR_ADDR]),
     lighting: K815.decodeLighting(header),
     pollRate: K815.decodePollRate(header),
   };

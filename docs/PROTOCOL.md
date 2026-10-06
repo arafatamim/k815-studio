@@ -60,11 +60,38 @@ Only the regions below are used by this app.
 
 | Address | Content |
 |---|---|
-| `0x00-0x07` | identity header. **Never write it.** The vendor tool only ever touches byte 1, and only for this model. |
+| `0x00-0x07` | identity header, plus the active profile in byte `0x01` (see below). Write it only as a whole block read off the pad with byte 1 changed: bytes 0 and 2-7 must survive verbatim. |
 | `0x08-0x6F` | settings (below) |
 | `0x6E-0x7A` | pointers to the end of the macro area |
 | `0xA0-0x2CF` | key table: 4 profiles × `0x8C` bytes, 10-byte entry per key slot |
 | `0x400-0xF1F` | macro area |
+
+### Active profile *(hw)*
+
+One byte of the identity header says which of the four profiles the pad is using:
+
+| byte `0x01` | profile | vendor's name |
+|---|---|---|
+| `0x03` | 1 | Office |
+| `0x23` | 2 | Game I |
+| `0x43` | 3 | Game II |
+| `0x63` | 4 | Game III |
+
+So the byte is `0x03 | (profile << 5)` counting from zero, and byte `0x76` mirrors the plain index
+(`0`-`3`).
+
+**Switching** means: read the 8-byte block at `0x00`, set byte 1, write the block back with bytes 0
+and 2-7 unchanged, write the mirrored index to `0x76`, then apply. That is two 8-byte blocks, about
+**0.3 s** — versus roughly 10 s for a full key write, since a write costs ~100 ms per 8-byte block.
+
+- Writing `0x76` on its own does nothing: `0x01` is the selector, `0x76` is bookkeeping.
+- The pad keeps its active profile across a power cycle, and nothing on the device switches it — the
+  vendor tool's profile buttons are the only built-in way to change it.
+- Each profile has its own key type bytes and its own `0x8C`-byte block in the key table, but all four
+  **share one macro area**, so writing any profile means rebuilding that area for all of them.
+- The vendor tool's profile buttons move exactly these two bytes and nothing else.
+- Confirmed by sweeping both bytes with a different binding in each profile (key 1 typing `a`, `i`,
+  `q`, `y`): the pad emitted exactly the letter belonging to the selected profile, every step.
 
 ### Key type bytes
 
@@ -86,7 +113,8 @@ Key order is reading order: key 1 is top-left *(hw)*.
 
 ### Key table entry
 
-10 bytes at `0xA0 + profile*0x8C + k*10`:
+10 bytes at `0xA0 + profile*0x8C + k*10`, for `profile` 0-3 (so reading a profile means reading its own
+`0x8C`-byte block and decoding it with that profile's type bytes):
 
 ```
 [0, count & 0x7F, 0, usageLo, usageHi, macroAddrLo, macroAddr>>8 & 0x3F, count>>7 & 0x3F, 0, 0]

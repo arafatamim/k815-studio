@@ -9,7 +9,9 @@
 // ============ 1. state ============
 
 const DEFAULT_STATE = {
-  keyBindings: Array(K815.NUM_KEYS).fill(""), // "" = unassigned
+  profiles: Array.from({ length: K815.NUM_PROFILES }, () => Array(K815.NUM_KEYS).fill("")),
+  selectedProfile: 0, // which profile the Keys tab is editing
+  activeProfile: 0, // the profile the pad last told us it is using
   selectedKey: 0,
   activeTab: "keys",
   lightMode: "static",
@@ -20,11 +22,26 @@ const DEFAULT_STATE = {
   pollRate: 0, // Hz as last read from the pad, 0 = unknown
 };
 
+/** Four lists of NUM_KEYS specs ("" = unassigned), whatever shape storage was in. */
+function normaliseProfiles(profiles) {
+  return Array.from({ length: K815.NUM_PROFILES }, (_, profile) =>
+    Array.from({ length: K815.NUM_KEYS }, (_, key) => profiles?.[profile]?.[key] || ""),
+  );
+}
+
 // Saved in this browser so your layout is still here next visit. Never leaves the machine.
 const STORAGE_KEY = "k815";
 let state = { ...DEFAULT_STATE };
 try {
-  state = { ...DEFAULT_STATE, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
+  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+  const saved = stored && typeof stored === "object" ? stored : {};
+  // Older versions stored a single flat keyBindings list. It becomes Profile 1, cloned into the
+  // other three, so the first write under the new layout leaves the pad behaving as it did.
+  if (Array.isArray(saved.keyBindings) && !saved.profiles) {
+    saved.profiles = Array.from({ length: K815.NUM_PROFILES }, () => [...saved.keyBindings]);
+    delete saved.keyBindings;
+  }
+  state = { ...DEFAULT_STATE, ...saved, profiles: normaliseProfiles(saved.profiles) };
 } catch {
   // storage unavailable or corrupted: run with defaults
 }
@@ -39,13 +56,19 @@ function saveState() {
 
 let isBusy = false; // true while a write/read to the pad is running
 
-// Keys whose binding on the pad isn't something this page can show (e.g. a macro made by other software).
-// Not saved: it describes the pad, which is re-read on every connect.
-let unrecognisedKeys = [];
+// Keys whose binding on the pad isn't something this page can show (e.g. a macro made by other software),
+// per profile. Not saved: it describes the pad, which is re-read on every connect.
+let unrecognised = Array.from({ length: K815.NUM_PROFILES }, () => []);
 
 // ============ 2. small helpers ============
 
 const byId = (id) => document.getElementById(id);
+
+/** The bindings the Keys tab is editing. */
+const currentBindings = () => state.profiles[state.selectedProfile];
+
+/** Which of that profile's keys hold macros this page can't show. */
+const currentUnrecognised = () => unrecognised[state.selectedProfile];
 
 const hexToRgb = (hex) => [1, 3, 5].map((start) => parseInt(hex.slice(start, start + 2), 16));
 
@@ -87,7 +110,7 @@ async function runOnPad(label, operation) {
 
 /** Enables the buttons that need a connected pad (and, for Write keys, valid bindings). */
 function updateButtons() {
-  const hasInvalidBinding = !state.keyBindings.every(isValidBinding);
+  const hasInvalidBinding = !state.profiles.every((bindings) => bindings.every(isValidBinding));
   document.querySelectorAll(".needs-device").forEach((button) => {
     button.disabled = !isConnected() || (button.id === "writeKeysBtn" && hasInvalidBinding);
   });
@@ -167,11 +190,11 @@ function bindingPreviewHtml(binding) {
 
 /** Updates the label printed on one keycap of the pad drawing. */
 function renderKeycap(index) {
-  const binding = state.keyBindings[index];
+  const binding = currentBindings()[index];
   const keycap = byId("keycaps").children[index];
   const legend = keycap.querySelector(".legend");
 
-  const emptyMark = unrecognisedKeys.includes(index) ? "?" : "·";
+  const emptyMark = currentUnrecognised().includes(index) ? "?" : "·";
   const text = binding ? binding.toUpperCase().split(" ").join("\n") : emptyMark;
   legend.textContent = text;
   legend.className = "legend";
@@ -186,11 +209,11 @@ function renderKeycap(index) {
 /** Redraws the editor for the selected key. Pass syncInput=false while the user is typing in the box. */
 function renderKeyEditor(syncInput) {
   const index = state.selectedKey;
-  const binding = state.keyBindings[index];
+  const binding = currentBindings()[index];
   const valid = isValidBinding(binding);
 
   byId("keyLabel").textContent = "KEY " + (index + 1);
-  const isCustomMacro = !binding && unrecognisedKeys.includes(index);
+  const isCustomMacro = !binding && currentUnrecognised().includes(index);
   byId("keyPreview").innerHTML = !valid
     ? '<span class="none bad">not a valid combo</span>'
     : isCustomMacro
@@ -202,13 +225,13 @@ function renderKeyEditor(syncInput) {
   document.querySelectorAll("#mediaChips .chip").forEach((chip) => {
     chip.classList.toggle("on", chip.dataset.media === binding);
   });
-  state.keyBindings.forEach((_, i) => renderKeycap(i));
+  currentBindings().forEach((_, i) => renderKeycap(i));
   updateButtons();
 }
 
 function setBinding(text, syncInput = true) {
-  state.keyBindings[state.selectedKey] = K815.normalizeSpec(text);
-  if (text) unrecognisedKeys = unrecognisedKeys.filter((key) => key !== state.selectedKey);
+  currentBindings()[state.selectedKey] = K815.normalizeSpec(text);
+  if (text) unrecognised[state.selectedProfile] = currentUnrecognised().filter((key) => key !== state.selectedKey);
   saveState();
   renderKeyEditor(syncInput);
 }
@@ -263,7 +286,7 @@ function startRecording() {
 }
 
 function buildKeysTab() {
-  byId("keycaps").innerHTML = state.keyBindings
+  byId("keycaps").innerHTML = currentBindings()
     .map((_, i) => `<button class="keycap"><span class="cap-number">${i + 1}</span><span class="legend"></span></button>`)
     .join("");
 
@@ -288,20 +311,61 @@ function buildKeysTab() {
   byId("clearBtn").onclick = () => setBinding("");
   byId("recordBtn").onclick = startRecording;
   byId("writeKeysBtn").onclick = () => {
-    const bindings = {};
-    state.keyBindings.forEach((binding, index) => {
-      if (binding) bindings[index] = binding;
-    });
-    const wouldErase = unrecognisedKeys.filter((key) => !bindings[key]).map((key) => key + 1);
-    const warning = `Key ${wouldErase.join(", ")} hold custom macros this page can't read. Writing will erase them. Continue?`;
-    if (wouldErase.length && !confirm(warning)) return;
+    // Warn about every profile whose unreadable macros this write would erase.
+    const warnings = state.profiles
+      .map((bindings, profile) => {
+        const lost = unrecognised[profile].filter((key) => !bindings[key]).map((key) => key + 1);
+        return lost.length ? `Profile ${profile + 1} key ${lost.join(", ")}` : null;
+      })
+      .filter(Boolean);
+    if (warnings.length && !confirm(`${warnings.join("; ")} hold custom macros this page can't read. Writing will erase them. Continue?`)) return;
     runOnPad("Writing keys", async () => {
-      await writeKeyBindings(bindings);
-      unrecognisedKeys = unrecognisedKeys.filter((key) => bindings[key]);
+      await writeKeyBindings(state.profiles);
+      unrecognised = unrecognised.map((keys, profile) => keys.filter((key) => state.profiles[profile][key]));
       renderKeyEditor(true);
     });
   };
 }
+
+/**
+ * The profile strip above the key editor. Selecting a profile changes what the Keys tab edits and,
+ * when the pad is connected, switches the pad to it too: that is cheap (two 8-byte blocks plus
+ * apply, ~0.3s) because it writes byte 0x01 rather than the whole 4KB of bindings.
+ */
+function renderProfileTabs() {
+  const live = isConnected() ? state.activeProfile : -1;
+  byId("profileTabs").innerHTML = state.profiles
+    .map((bindings, profile) => {
+      const badge = profile === live ? '<em class="live">live</em>' : "";
+      const selected = profile === state.selectedProfile ? "on" : "";
+      const assigned = bindings.filter(Boolean).length;
+      return (
+        `<button data-profile="${profile}" class="${selected}">` +
+        `<i>0${profile + 1}</i>Profile ${profile + 1}${badge}` +
+        `<small>${assigned}/${K815.NUM_KEYS}</small></button>`
+      );
+    })
+    .join("");
+  byId("profileScopeLabel").textContent = `Profile ${state.selectedProfile + 1}`;
+  byId("profileReadout").textContent = isConnected() ? `${state.activeProfile + 1} of 4 live` : "—";
+}
+
+byId("profileTabs").onclick = (event) => {
+  const button = event.target.closest("[data-profile]");
+  if (!button || isBusy) return;
+  const profile = Number(button.dataset.profile);
+  state.selectedProfile = profile;
+  saveState();
+  renderProfileTabs();
+  renderKeyEditor(true);
+  if (!isConnected()) return;
+  runOnPad(`Switching to Profile ${profile + 1}`, async () => {
+    await switchProfile(profile);
+    state.activeProfile = profile;
+    saveState();
+    renderProfileTabs();
+  });
+};
 
 // ============ 5. light tab ============
 
@@ -499,8 +563,10 @@ function showConnected(connected) {
 async function loadFromPad() {
   const config = await readPadConfig();
 
-  state.keyBindings = config.bindings;
-  unrecognisedKeys = config.unrecognised;
+  state.profiles = config.profiles.map((profile) => profile.bindings);
+  unrecognised = config.profiles.map((profile) => profile.unrecognised);
+  state.activeProfile = config.activeProfile;
+  state.selectedProfile = config.activeProfile; // show the profile the pad is actually using
   state.pollRate = config.pollRate;
   if (config.lighting) {
     const { mode, ...rest } = config.lighting; // colors, speed, brightness, reactStyle share names with state
@@ -511,11 +577,13 @@ async function loadFromPad() {
   renderKeyEditor(true);
   renderLightTab();
   renderPollRate();
+  renderProfileTabs();
 
-  const notes = [];
-  if (config.unrecognised.length) notes.push(`key ${config.unrecognised.map((key) => key + 1).join(", ")} hold macros this page can't show`);
+  const notes = [`Profile ${config.activeProfile + 1} is live`];
+  const customKeys = config.profiles[config.activeProfile].unrecognised;
+  if (customKeys.length) notes.push(`key ${customKeys.map((key) => key + 1).join(", ")} hold macros this page can't show`);
   if (!config.lighting) notes.push("lighting mode not supported here, left unchanged");
-  return "Read from pad" + (notes.length ? ": " + notes.join("; ") : " — done");
+  return "Read from pad: " + notes.join("; ");
 }
 
 async function connectTo(hidDevice) {
@@ -564,6 +632,7 @@ function setUpConnection() {
 
 buildKeysTab();
 renderTabs();
+renderProfileTabs();
 renderLightTab();
 renderPollRate();
 renderKeyEditor(true);

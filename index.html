@@ -36,7 +36,7 @@
         <div class="specs">
           <div>DEVICE <b>VID 30FA · PID 1340</b></div>
           <div>POLLING <b id="pollReadout">—</b></div>
-          <div>PROFILES <b>same layout × 4</b></div>
+          <div>PROFILE <b id="profileReadout">—</b></div>
         </div>
       </div>
 
@@ -51,6 +51,12 @@
           <p class="lede">
             Click a key on the pad, then give it a shortcut, a sequence (<code>ctrl+c ctrl+v</code>) or a
             media key.
+          </p>
+          <span class="label" style="margin-top: 20px">Mappings for <b id="profileScopeLabel">Profile 1</b></span>
+          <div class="tabs profile-tabs" id="profileTabs"></div>
+          <p class="note">
+            Each profile holds its own 8 bindings, and clicking one switches the pad to it. The
+            backlight is shared by all four profiles.
           </p>
           <span class="label" style="margin-top: 20px">Binding</span>
           <div class="editor">
@@ -73,8 +79,8 @@
           <div class="action-row">
             <button class="btn primary needs-device" id="writeKeysBtn">Write keys to pad</button
             ><span
-              >Empty keys do nothing. Close any other K815 configuration software first, as it can overwrite
-              your settings.</span
+              >Writes all four profiles to the pad. Empty keys do nothing. Close any other K815
+              configuration software first, as it can overwrite your settings.</span
             >
           </div>
         </div>
@@ -121,8 +127,8 @@
           <button class="btn needs-device" id="backupBtn">Download config (.bin)</button>
           <span class="label">Sync</span>
           <p class="lede" style="margin: 0 0 14px">
-            The page reads the pad's saved keys, lighting and polling rate when it connects.
-            Colours come back rounded to the pad's 4 bits per channel.
+            The page reads all four profiles' saved keys, the lighting and the polling rate when it
+            connects. Colours come back rounded to the pad's 4 bits per channel.
           </p>
           <button class="btn needs-device" id="readPadBtn">Read settings from pad</button>
         </div>

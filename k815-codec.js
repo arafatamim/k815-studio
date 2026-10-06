@@ -1,10 +1,11 @@
 /*
  * K815 codec: turns key bindings and lighting settings into the bytes the pad stores.
- * Pure functions only. No USB, no DOM, so it can be tested with `node test_web.js`.
+ * Pure functions only. No USB, no DOM, so it can be tested with `node test.js`.
  *
  * The pad keeps a 4 KB config memory. The parts we touch:
  *
- *   0x00-0x07  identity header (VID/PID). Never written.
+ *   0x00-0x07  identity header (VID/PID). Never written wholesale: only byte 0x01 changes, and only
+ *              to select the active profile (see profileSelectorByte).
  *   0x08-0x6F  settings: per-key type bytes, LED mode/colours/brightness, polling rate.
  *   0x6E-0x7A  pointers to the end of the macro area.
  *   0xA0-0x2CF key table: 4 profiles x 14 slots x 10 bytes. We use slots 0-7 of each profile.
@@ -23,6 +24,13 @@ const PROFILE_STRIDE = 0x8c; // bytes between one profile's key slots and the ne
 const ENTRY_LEN = 10; // bytes per key slot
 const MACRO_START = 0x400;
 const MACRO_END_LIMIT = 0xf20; // macro area must stay below this
+
+// Which of the four profiles the pad is using. Byte 0x01 holds PROFILE_SELECTOR_BASE | (profile << 5);
+// the vendor tool also mirrors the plain index into 0x76. Confirmed on hardware: writing byte 0x01
+// switches the pad between profiles, while 0x76 on its own does nothing.
+const PROFILE_SELECTOR_ADDR = 0x01;
+const PROFILE_SELECTOR_BASE = 0x03;
+const PROFILE_MIRROR_ADDR = 0x76;
 
 // Each key has a "type" byte per profile. Low 5 bits: what the key does. Top 3 bits: "button response" lighting.
 const KEY_TYPE_MACRO = 0x0d; // on-device macro (also used for plain single keys)
@@ -101,19 +109,21 @@ const highByte6 = (n) => (n >> 8) & 0x3f; // addresses are 14 bit
  * bindings: {keyIndex: spec}. Builds, for each bound key:
  *   types[key]    type byte (KEY_TYPE_*)
  *   entries[key]  its 10-byte key-table entry
- * plus `area`, the concatenated macro records.
+ * plus `area`, the concatenated macro records. They are laid out from `base`, so several profiles
+ * can share the one macro area.
  *
  * A macro record is [1, 0] (repeat once) followed by one (delay, hidCode) pair per event,
  * padded to a multiple of 8 bytes. The delay byte has PRESS_FLAG set for key-down.
  */
-function buildBindings(bindings) {
+function buildBindings(bindings, base = MACRO_START) {
   const types = {};
   const entries = {};
   const area = [];
 
   for (const [key, spec] of Object.entries(bindings)) {
+    if (!spec) continue; // unassigned: leave this key's type byte cleared
     const [kind, value] = parseBinding(spec);
-    const addr = MACRO_START + area.length;
+    const addr = base + area.length;
 
     if (kind === "media") {
       types[key] = KEY_TYPE_MEDIA;
@@ -134,33 +144,52 @@ function buildBindings(bindings) {
     area.push(...record, ...Array(padding).fill(0));
   }
 
-  if (MACRO_START + area.length > MACRO_END_LIMIT) throw new Error("macros too long");
+  if (base + area.length > MACRO_END_LIMIT)
+    throw new Error("macros too long: the macro area is shared by all four profiles");
   return { types, entries, area };
 }
 
+/** Signature of one layout, so profiles with identical bindings can share a set of macro records. */
+const layoutSignature = (bindings) =>
+  Object.entries(bindings)
+    .filter(([, spec]) => spec)
+    .sort(([a], [b]) => a - b)
+    .map(([key, spec]) => `${key}=${spec}`)
+    .join(",");
+
 /**
- * header: the pad's current bytes 0x00-0x9F. Returns what to write back:
- *   header  the same bytes with key types and macro-end pointers updated
- *   table   the 0x230-byte key table (the same bindings for all 4 profiles)
+ * header: the pad's current bytes 0x00-0x9F. profiles: one bindings object per profile, in profile
+ * order (arrays of specs are fine; "" means unassigned). Returns what to write back:
+ *   header  the same bytes with every profile's key types and the macro-end pointers updated
+ *   table   the 0x230-byte key table, each profile's 0x8C block filled from its own bindings
  *   area    the macro records, to be written at MACRO_START
+ * Byte 0x01 is copied through untouched, so writing keys never changes the active profile.
  */
-function buildKeyImage(header, bindings) {
-  const { types, entries, area } = buildBindings(bindings);
+function buildProfileImage(header, profiles) {
+  if (profiles.length !== NUM_PROFILES) throw new Error(`expected ${NUM_PROFILES} profiles`);
+
   const newHeader = [...header];
-
-  // Keep each type byte's top 3 bits (button-response lighting); replace the low 5.
-  for (const profileAddrs of TYPE_ADDR) {
-    profileAddrs.forEach((addr, key) => {
-      newHeader[addr] = (newHeader[addr] & ~KEY_TYPE_MASK & 0xff) | (types[key] ?? 0);
-    });
-  }
-
   const table = Array(KEY_TABLE_LEN).fill(0);
-  for (let profile = 0; profile < NUM_PROFILES; profile++) {
+  const area = [];
+  const layouts = new Map(); // signature -> {types, entries}
+
+  profiles.forEach((bindings, profile) => {
+    const signature = layoutSignature(bindings);
+    if (!layouts.has(signature)) {
+      const layout = buildBindings(bindings, MACRO_START + area.length);
+      layouts.set(signature, layout);
+      area.push(...layout.area);
+    }
+    const { types, entries } = layouts.get(signature);
+
+    // Keep each type byte's top 3 bits (button-response lighting); replace the low 5.
+    TYPE_ADDR[profile].forEach((addr, key) => {
+      newHeader[addr] = ((newHeader[addr] & ~KEY_TYPE_MASK) | (types[key] ?? 0)) & 0xff;
+    });
     for (const [key, entry] of Object.entries(entries)) {
       table.splice(profile * PROFILE_STRIDE + key * ENTRY_LEN, ENTRY_LEN, ...entry);
     }
-  }
+  });
 
   // The vendor tool lays out four empty per-profile tables right after the macros, 8 bytes apart.
   const macroEnd = MACRO_START + area.length;
@@ -170,6 +199,26 @@ function buildKeyImage(header, bindings) {
   newHeader.splice(0x78, 3, 0, lowByte(t4), highByte6(t4));
 
   return { header: newHeader, table, area };
+}
+
+/** The one layout for all four profiles: what this file did before profiles existed. */
+const buildKeyImage = (header, bindings) =>
+  buildProfileImage(header, Array.from({ length: NUM_PROFILES }, () => bindings));
+
+/** Byte 0x01 for a profile: Office 0x03, Game I 0x23, Game II 0x43, Game III 0x63. */
+const profileSelectorByte = (profile) => (PROFILE_SELECTOR_BASE | ((profile & 3) << 5)) & 0xff;
+
+/** The profile a byte 0x01 value selects. */
+const profileFromSelectorByte = (byte) => (byte >> 5) & 3;
+
+/**
+ * The 8-byte block at 0x00 with byte 0x01 set to `profile`. Everything else is copied from `block`:
+ * bytes 0 and 2-7 are the device identity and must come back off the pad untouched.
+ */
+function buildProfileSelectBlock(block, profile) {
+  const out = [...block.slice(0, 8)];
+  out[PROFILE_SELECTOR_ADDR] = (out[PROFILE_SELECTOR_ADDR] & ~0x60 & 0xff) | ((profile & 3) << 5);
+  return out;
 }
 
 // ---------- lighting -> bytes ----------
@@ -276,16 +325,17 @@ function eventsToBinding(events) {
 }
 
 /**
- * header: pad bytes 0x00-0x9F. entries: bytes at HEADER_LEN, at least 8 x ENTRY_LEN (profile 0).
- * macros: bytes from MACRO_START up to the macro-end pointer.
+ * header: pad bytes 0x00-0x9F. entries: one profile's key table, at least 8 x ENTRY_LEN.
+ * macros: bytes from MACRO_START up to the macro-end pointer. profile: which of the four the type
+ * bytes and entries belong to.
  * Returns {bindings: [text per key, "" if none], unrecognised: [key indexes]}.
  */
-function decodeBindings(header, entries, macros) {
+function decodeBindings(header, entries, macros, profile = 0) {
   const bindings = [];
   const unrecognised = [];
 
   for (let key = 0; key < NUM_KEYS; key++) {
-    const type = header[TYPE_ADDR[0][key]] & KEY_TYPE_MASK;
+    const type = header[TYPE_ADDR[profile][key]] & KEY_TYPE_MASK;
     const entry = entries.slice(key * ENTRY_LEN, (key + 1) * ENTRY_LEN);
     let binding = "";
 
@@ -358,9 +408,11 @@ function decodeLighting(header) {
 const decodePollRate = (header) => Number(Object.keys(POLL_RATES).find((hz) => POLL_RATES[hz] === header[POLL_ADDR])) || 0;
 
 const K815 = {
-  NUM_KEYS, HEADER_LEN, KEY_TABLE_LEN, MACRO_START, SETTINGS_BASE, POLL_ADDR,
+  NUM_KEYS, NUM_PROFILES, HEADER_LEN, KEY_TABLE_LEN, MACRO_START, SETTINGS_BASE, POLL_ADDR,
+  PROFILE_STRIDE, PROFILE_SELECTOR_ADDR, PROFILE_MIRROR_ADDR,
   TYPE_ADDR, KEYS, MODIFIERS, MEDIA, LED_MODES, POLL_RATES,
-  normalizeSpec, parseBinding, buildBindings, buildKeyImage,
+  normalizeSpec, parseBinding, buildBindings, buildKeyImage, buildProfileImage,
+  profileSelectorByte, profileFromSelectorByte, buildProfileSelectBlock,
   colorNibbleAddr, buildLedSettings, ledLiveReport,
   decodeBindings, decodeLighting, decodePollRate, MACRO_END_LIMIT, ENTRY_LEN,
 };

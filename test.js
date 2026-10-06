@@ -52,4 +52,47 @@ const dark = [...full]; dark.splice(8, 0x68, ...K.buildLedSettings(dark.slice(8,
 assert.strictEqual(K.decodeLighting(dark).mode, 'off');
 const unknown = [...full]; unknown[0x1C] = 4 << 4; assert.strictEqual(K.decodeLighting(unknown), null);
 const poll = [...full]; poll[0x1E] = 1; assert.strictEqual(K.decodePollRate(poll), 500);
+
+// ---- profiles ----
+// Byte 0x01 selects the active profile as 0x03 | (profile << 5); the vendor tool mirrors the plain
+// index into 0x76. Confirmed on hardware: writing byte 0x01 switches the pad, 0x76 alone does not.
+assert.strictEqual(K.NUM_PROFILES, 4);
+eq([0, 1, 2, 3].map(K.profileSelectorByte), [0x03, 0x23, 0x43, 0x63]);
+eq([0x03, 0x23, 0x43, 0x63, 0xFF].map(K.profileFromSelectorByte), [0, 1, 2, 3, 3]);
+assert.strictEqual(K.PROFILE_SELECTOR_ADDR, 1);
+assert.strictEqual(K.PROFILE_MIRROR_ADDR, 0x76);
+// switching changes byte 1 only: bytes 0 and 2-7 are the identity header and are passed through
+const ident = [0x5A, 0x03, 0xA5, 0x40, 0x13, 0xFA, 0x30, 0x10];
+eq(K.buildProfileSelectBlock(ident, 3), [0x5A, 0x63, 0xA5, 0x40, 0x13, 0xFA, 0x30, 0x10]);
+eq(K.buildProfileSelectBlock(ident, 0), ident);
+
+// four different layouts: each profile gets its own type bytes, table block and macro record
+const four = K.buildProfileImage(Array(0xA0).fill(0), [{ 0: 'a' }, { 0: 'i' }, { 0: 'q' }, { 0: 'y' }]);
+assert.strictEqual(four.table.length, 0x230);
+assert.strictEqual(four.area.length, 32);
+K.TYPE_ADDR.forEach((addrs, p) => {
+  assert.strictEqual(four.header[addrs[0]] & 0x1F, 0x0D, `profile ${p} key 1 is a macro`);
+  assert.strictEqual(four.header[addrs[1]] & 0x1F, 0, `profile ${p} key 2 is unassigned`);
+});
+const pEntry = (image, profile, key) => image.table.slice(profile * 0x8C + key * 10, profile * 0x8C + key * 10 + 10);
+[0, 1, 2, 3].forEach((p) => eq(pEntry(four, p, 0).slice(5, 7), [p * 8, 0x04]));
+eq(four.area.slice(0, 8), [1, 0, 0x94, 0x04, 0x14, 0x04, 0, 0]);
+eq(four.area.slice(8, 16), [1, 0, 0x94, 0x0C, 0x14, 0x0C, 0, 0]);
+eq([four.header[0x6E], four.header[0x6F]], [0x20, 0x04]); // macro end = 0x420
+// identities are untouched, including the active profile byte
+const withActive = Array(0xA0).fill(0);
+withActive[K.PROFILE_SELECTOR_ADDR] = 0x43;
+assert.strictEqual(K.buildProfileImage(withActive, [{ 0: 'a' }, {}, {}, {}]).header[K.PROFILE_SELECTOR_ADDR], 0x43);
+// identical layouts share one set of records; empty profiles leave their keys unassigned
+const same = K.buildProfileImage(Array(0xA0).fill(0), ['a', 'a', 'a', 'a'].map((spec) => ({ 0: spec })));
+assert.strictEqual(same.area.length, 8);
+assert.strictEqual(pEntry(same, 0, 0).join(), pEntry(same, 3, 0).join());
+const blank = K.buildProfileImage(Array(0xA0).fill(0), [{}, {}, {}, {}]);
+assert.strictEqual(blank.area.length, 0);
+
+// decoding is per profile: profile 2's entries must be read with profile 2's type bytes
+const d2 = K.decodeBindings(four.header, four.table.slice(2 * 0x8C, 2 * 0x8C + 80), four.area, 2);
+eq(d2.bindings.slice(0, 1), ['q']);
+eq(d2.unrecognised, []);
+eq(K.decodeBindings(four.header, four.table.slice(0, 80), four.area).bindings.slice(0, 1), ['a']);
 console.log('ok');

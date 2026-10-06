@@ -638,3 +638,56 @@ input[type="range"]::-moz-range-thumb {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* profile strip: which profile the keys tab edits, and which one the pad is using */
+.profile-tabs {
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 0;
+}
+.profile-tabs button {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  border: 1.5px solid var(--ink);
+  background: var(--card);
+  border-radius: 8px;
+  padding: 8px 13px;
+  font: 700 15px var(--display);
+  letter-spacing: -0.01em;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.profile-tabs button.on::after {
+  display: none; /* the base tabs underline does not fit these chips */
+}
+.profile-tabs button i {
+  font: 600 11px var(--mono);
+  font-style: normal;
+  position: static; /* the base tabs rule nudges its number down 4px */
+  top: 0;
+  vertical-align: baseline;
+}
+.profile-tabs button small {
+  font: 600 11px var(--mono);
+  color: var(--mute);
+}
+.profile-tabs button.on {
+  background: var(--accent);
+}
+.profile-tabs button.on i,
+.profile-tabs button.on small {
+  color: var(--ink);
+}
+.profile-tabs .live {
+  font: 700 10px var(--mono);
+  font-style: normal;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.label b {
+  color: var(--ink);
+}
