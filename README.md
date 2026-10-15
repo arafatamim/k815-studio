@@ -30,6 +30,18 @@ It is plain HTML, CSS and JavaScript with no build step, so it can also be hoste
 
 **Close any other software for the pad first.** The vendor tool re-uploads its own config when it starts and will overwrite your keys, lighting and polling rate.
 
+## Linux: "Connect failed: Failed to open the device"
+
+Chromium talks to the pad through `/dev/hidraw*`. On a default install those nodes are root-only (`crw-------`), so the browser is denied access and connecting fails with *Failed to open the device*. There is no generic rule that lets a user open arbitrary HID devices, so the K815 needs a udev rule.
+
+The page shows this fix itself when it can't connect. Paste one command into a terminal, then unplug/replug the pad and reload the page:
+
+```sh
+echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="30fa", ATTRS{idProduct}=="1340", MODE="0666", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/99-k815-macropad.rules >/dev/null && sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw
+```
+
+The rule is also in the repo as [`99-k815-macropad.rules`](99-k815-macropad.rules), and [`install.sh`](install.sh) does the same thing if you have it checked out. It grants the logged-in desktop user access (`TAG+="uaccess"`, with `MODE="0666"` as a fallback where there is no logind ACL) — the same pattern used for many gaming peripherals.
+
 ## What is tested
 
 Tested on real hardware: single-key bindings, the polling rate, and static colours.

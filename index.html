@@ -30,6 +30,26 @@
       WebHID isn't available here. Use Chrome or Edge, from <code>localhost</code> or HTTPS.
     </div>
 
+    <details id="linuxHelp" hidden>
+      <summary>Can't connect on Linux? Run one command.</summary>
+      <div class="linux-help-body">
+        <p>
+          Chromium talks to the pad through <code>/dev/hidraw*</code>, which is root-only by default,
+          so the browser reports <b>“Failed to open the device”</b>. Paste this into a terminal once
+          to grant access, then unplug/replug the pad and reload this page:
+        </p>
+        <div class="linux-help-cmd">
+          <code id="linuxCmd">echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="30fa", ATTRS{idProduct}=="1340", MODE="0666", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/99-k815-macropad.rules &gt;/dev/null &amp;&amp; sudo udevadm control --reload-rules &amp;&amp; sudo udevadm trigger --subsystem-match=hidraw</code>
+          <button class="btn small" id="copyCmdBtn" type="button">Copy</button>
+        </div>
+        <p class="linux-help-hint">
+          The command just writes that one-line udev rule to <code>/etc/udev/rules.d/</code> and
+          reloads udev. Nothing is downloaded and no repository is needed. <code>sudo</code> asks for
+          your password.
+        </p>
+      </div>
+    </details>
+
     <main>
       <div class="left">
         <div id="padBody"><div class="keycap-grid" id="keycaps"></div></div>

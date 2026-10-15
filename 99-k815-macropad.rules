@@ -1,0 +1,13 @@
+# K815 macropad (vendor 30fa, product 1340)
+#
+# Chromium's WebHID talks to the pad through /dev/hidraw*, but on a default
+# Linux install those nodes are root-only (crw-------), so the browser cannot
+# open the device and reports "Connect failed: Failed to open the device."
+# This grants the logged-in desktop user access (MODE as a fallback for systems
+# without logind ACLs).
+#
+# Install:
+#   sudo cp 99-k815-macropad.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   (unplug and replug the pad, then reload the page)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="30fa", ATTRS{idProduct}=="1340", MODE="0666", TAG+="uaccess"

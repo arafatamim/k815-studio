@@ -586,6 +586,52 @@ async function loadFromPad() {
   return "Read from pad: " + notes.join("; ");
 }
 
+/** Copies the Linux install one-liner, with a select-the-text fallback if the clipboard is blocked. */
+function setUpLinuxHelpCopy() {
+  const button = byId("copyCmdBtn");
+  button.onclick = async () => {
+    const command = byId("linuxCmd").textContent;
+    let label = "Copied";
+    try {
+      await navigator.clipboard.writeText(command);
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(byId("linuxCmd"));
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      label = "Press Ctrl+C";
+    }
+    button.textContent = label;
+    setTimeout(() => (button.textContent = "Copy"), 2000);
+  };
+}
+
+/** Reveals and opens the Linux udev-rule setup note in the page. */
+function showLinuxHelp() {
+  const help = byId("linuxHelp");
+  help.hidden = false;
+  help.open = true;
+  help.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/**
+ * Chrome/webHID errors are terse. "Failed to open the device" on Linux almost always means the
+ * /dev/hidraw* nodes are root-only because no udev rule grants access; open the setup note and
+ * point the user at it.
+ */
+function connectErrorHint(error) {
+  const message = error.message || error;
+  const isOpenFailure = /open the device/i.test(message);
+  const onLinux = navigator.userAgent.includes("Linux");
+  if (isOpenFailure && onLinux) {
+    showLinuxHelp();
+    return message + " — on Linux /dev/hidraw* isn't accessible. Install the udev rule shown at " +
+      "the top of the page, then replug the pad.";
+  }
+  return message;
+}
+
 async function connectTo(hidDevice) {
   await openDevice(hidDevice);
   showConnected(true);
@@ -598,6 +644,9 @@ function setUpConnection() {
     return;
   }
 
+  // On Linux the udev rule is needed before anything can connect; offer the note up front.
+  if (navigator.userAgent.includes("Linux")) byId("linuxHelp").hidden = false;
+
   byId("connectBtn").onclick = async () => {
     try {
       const [chosen] = await navigator.hid.requestDevice({
@@ -607,14 +656,14 @@ function setUpConnection() {
       await closeDevice();
       await connectTo(chosen);
     } catch (error) {
-      setStatus("Connect failed: " + error.message, "err");
+      setStatus("Connect failed: " + connectErrorHint(error), "err");
     }
   };
 
   // Reconnect automatically to a pad this site already has permission for.
   navigator.hid.getDevices().then((devices) => {
     const known = devices.find(isK815);
-    if (known) connectTo(known).catch((error) => setStatus(error.message, "err"));
+    if (known) connectTo(known).catch((error) => setStatus(connectErrorHint(error), "err"));
   });
 
   navigator.hid.onconnect = (event) => {
@@ -637,5 +686,6 @@ renderLightTab();
 renderPollRate();
 renderKeyEditor(true);
 setUpConnection();
+setUpLinuxHelpCopy();
 updateButtons();
 requestAnimationFrame(drawPreview);
